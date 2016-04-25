@@ -2,8 +2,6 @@ package com.orangefunction.tomcat.redissessions;
 
 import org.apache.catalina.util.CustomObjectInputStream;
 
-import javax.servlet.http.HttpSession;
-
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.io.*;
@@ -16,7 +14,7 @@ import org.apache.juli.logging.LogFactory;
 public class JavaSerializer implements Serializer {
   private ClassLoader loader;
 
-  private final Log log = LogFactory.getLog(JavaSerializer.class);
+  private static final Log log = LogFactory.getLog(JavaSerializer.class);
 
   @Override
   public void setClassLoader(ClassLoader loader) {
