@@ -5,6 +5,8 @@ import java.io.*;
 
 public class SessionSerializationMetadata implements Serializable {
 
+  private static final long serialVersionUID = 4817120933319990092L;
+  
   private byte[] sessionAttributesHash;
 
   public SessionSerializationMetadata() {

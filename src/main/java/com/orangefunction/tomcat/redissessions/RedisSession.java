@@ -12,7 +12,9 @@ import org.apache.juli.logging.LogFactory;
 
 public class RedisSession extends StandardSession {
 
-  private final Log log = LogFactory.getLog(RedisSession.class);
+  private static final long serialVersionUID = 4187854774384971447L;
+
+  private static final Log log = LogFactory.getLog(RedisSession.class);
 
   protected static Boolean manualDirtyTrackingSupportEnabled = false;
 

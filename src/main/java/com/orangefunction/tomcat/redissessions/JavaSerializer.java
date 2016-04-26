@@ -43,7 +43,7 @@ public class JavaSerializer implements Serializer {
     try {
       digester = MessageDigest.getInstance("MD5");
     } catch (NoSuchAlgorithmException e) {
-      log.error("Unable to get MessageDigest instance for MD5");
+      log.error("Unable to get MessageDigest instance for MD5", e);
     }
     return digester.digest(serialized);
   }

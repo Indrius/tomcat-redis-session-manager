@@ -10,9 +10,6 @@ import org.apache.catalina.Valve;
 import org.apache.catalina.Session;
 import org.apache.catalina.session.ManagerBase;
 
-import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
-import org.apache.commons.pool2.impl.BaseObjectPoolConfig;
-
 import redis.clients.util.Pool;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisSentinelPool;
@@ -22,7 +19,6 @@ import redis.clients.jedis.Protocol;
 
 import java.io.IOException;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Enumeration;
 import java.util.Set;
 import java.util.EnumSet;
@@ -52,7 +48,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
 
   protected byte[] NULL_SESSION = "null".getBytes();
 
-  private final Log log = LogFactory.getLog(RedisSessionManager.class);
+  private final static Log log = LogFactory.getLog(RedisSessionManager.class);
 
   protected String host = "localhost";
   protected int port = 6379;
@@ -63,13 +59,13 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
   Set<String> sentinelSet = null;
 
   protected Pool<Jedis> connectionPool;
-  protected JedisPoolConfig connectionPoolConfig = new JedisPoolConfig();
+  protected final JedisPoolConfig connectionPoolConfig = new JedisPoolConfig();
 
   protected RedisSessionHandlerValve handlerValve;
   protected ThreadLocal<RedisSession> currentSession = new ThreadLocal<>();
-  protected ThreadLocal<SessionSerializationMetadata> currentSessionSerializationMetadata = new ThreadLocal<>();
-  protected ThreadLocal<String> currentSessionId = new ThreadLocal<>();
-  protected ThreadLocal<Boolean> currentSessionIsPersisted = new ThreadLocal<>();
+  protected final ThreadLocal<SessionSerializationMetadata> currentSessionSerializationMetadata = new ThreadLocal<>();
+  protected final ThreadLocal<String> currentSessionId = new ThreadLocal<>();
+  protected final ThreadLocal<Boolean> currentSessionIsPersisted = new ThreadLocal<>();
   protected Serializer serializer;
 
   protected static String name = "RedisSessionManager";
@@ -381,7 +377,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
         try {
           error = saveInternal(jedis, session, true);
         } catch (IOException ex) {
-          log.error("Error saving newly created session: " + ex.getMessage());
+          log.error("Error saving newly created session", ex);
           currentSession.set(null);
           currentSessionId.set(null);
           session = null;
@@ -414,7 +410,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
     try {
       save(session);
     } catch (IOException ex) {
-      log.warn("Unable to add to session manager store: " + ex.getMessage());
+      log.error("Unable to add to session manager store", ex);
       throw new RuntimeException("Unable to add to session manager store.", ex);
     }
   }
@@ -542,7 +538,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
 
       if (log.isTraceEnabled()) {
         log.trace("Session Contents [" + id + "]:");
-        Enumeration en = session.getAttributeNames();
+        Enumeration<String> en = session.getAttributeNames();
         while(en.hasMoreElements()) {
           log.trace("  " + en.nextElement());
         }
@@ -576,7 +572,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
   }
 
   protected boolean saveInternal(Jedis jedis, Session session, boolean forceSave) throws IOException {
-    Boolean error = true;
+    boolean error = true;
 
     try {
       log.trace("Saving session " + session + " into Redis");
@@ -585,7 +581,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
 
       if (log.isTraceEnabled()) {
         log.trace("Session Contents [" + redisSession.getId() + "]:");
-        Enumeration en = redisSession.getAttributeNames();
+        Enumeration<String> en = redisSession.getAttributeNames();
         while(en.hasMoreElements()) {
           log.trace("  " + en.nextElement());
         }
@@ -601,7 +597,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
            forceSave
            || redisSession.isDirty()
            || null == (isCurrentSessionPersisted = this.currentSessionIsPersisted.get())
-            || !isCurrentSessionPersisted
+           || !isCurrentSessionPersisted
            || !Arrays.equals(originalSessionAttributesHash, (sessionAttributesHash = serializer.attributesHashFrom(redisSession)))
          ) {
 
@@ -630,11 +626,8 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
 
       return error;
     } catch (IOException e) {
-      log.error(e.getMessage());
-
+      log.error(e.getMessage(), e);
       throw e;
-    } finally {
-      return error;
     }
   }
 
@@ -666,11 +659,15 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
     if (redisSession != null) {
       try {
         if (redisSession.isValid()) {
-          log.trace("Request with session completed, saving session " + redisSession.getId());
-          save(redisSession, getAlwaysSaveAfterRequest());
+        	if (log.isTraceEnabled()) {
+        		log.trace("Request with session completed, saving session " + redisSession.getId());
+        	}
+            save(redisSession, getAlwaysSaveAfterRequest());
         } else {
-          log.trace("HTTP Session has been invalidated, removing :" + redisSession.getId());
-          remove(redisSession);
+        	if (log.isTraceEnabled()) {
+        		log.trace("HTTP Session has been invalidated, removing :" + redisSession.getId());
+        	}
+            remove(redisSession);
         }
       } catch (Exception e) {
         log.error("Error storing/removing session", e);
@@ -678,7 +675,9 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
         currentSession.remove();
         currentSessionId.remove();
         currentSessionIsPersisted.remove();
-        log.trace("Session removed from ThreadLocal :" + redisSession.getIdInternal());
+        if (log.isTraceEnabled()) {
+        	log.trace("Session removed from ThreadLocal :" + redisSession.getIdInternal());
+        }
       }
     }
   }
@@ -704,12 +703,13 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
       }
     } catch (Exception e) {
       e.printStackTrace();
+      log.fatal("Can not initialize Redis", e);
       throw new LifecycleException("Error connecting to Redis", e);
     }
   }
 
   private void initializeSerializer() throws ClassNotFoundException, IllegalAccessException, InstantiationException {
-    log.info("Attempting to use serializer :" + serializationStrategyClass);
+    log.info("Attempting to use serializer: " + serializationStrategyClass);
     serializer = (Serializer) Class.forName(serializationStrategyClass).newInstance();
 
     Loader loader = null;
