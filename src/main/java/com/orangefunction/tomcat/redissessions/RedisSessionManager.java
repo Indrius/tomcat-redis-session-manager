@@ -52,14 +52,14 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
   
   private final static String FIRST_WIN_KEY_PREFIX = "FirstWin_";
   
-  private static final byte[] LUA_READ_SESSION = ("redis.call('SETNX',KEYS[2],\"0\")\n" +
-		  									      "return {redis.call('GET',KEYS[1]), redis.call('GET',KEYS[2])}").getBytes();
+  private static final byte[] LUA_READ_SESSION = ("redis.call('SETNX',KEYS[2],\"0\");\n" +
+		  									      "return {redis.call('GET',KEYS[1]), redis.call('GET',KEYS[2])};\n").getBytes();
   
-  private static final byte[] LUA_SAVE_SESSION = ("local seq = redis.call('GET',KEYS[2])\n" +
-												"if seq == ARGV[2] then\n" +
-												"  redis.call('INCR',KEYS[2])\n" +
-												"  redis.call('SET',KEYS[1],ARGV[1])\n" +
-												"end").getBytes();
+  private static final byte[] LUA_SAVE_SESSION = ("local seq = redis.call('GET',KEYS[2]);\n" +
+												"if ARGV[2] == '' or seq == ARGV[2] then\n" +
+												"  redis.call('INCR',KEYS[2]);\n" +
+												"  redis.call('SET',KEYS[1],ARGV[1]);\n" +
+												"end;\n").getBytes();
 
   private final static Log log = LogFactory.getLog(RedisSessionManager.class);
 
@@ -82,7 +82,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
   protected final ThreadLocal<Boolean> currentSessionIsPersisted = new ThreadLocal<>();
   protected Serializer serializer;
 
-  protected static String name = "RedisSessionManager";
+  protected final static String name = "RedisSessionManager";
 
   protected String serializationStrategyClass = "com.orangefunction.tomcat.redissessions.JavaSerializer";
 
@@ -387,6 +387,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
       }
 
       currentSession.set(session);
+      currentSessionFirstWinSequence.set("".getBytes());
       currentSessionId.set(sessionId);
       currentSessionIsPersisted.set(false);
       currentSessionSerializationMetadata.set(new SessionSerializationMetadata());
@@ -398,6 +399,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
           log.error("Error saving newly created session", ex);
           currentSession.set(null);
           currentSessionId.set(null);
+          currentSessionFirstWinSequence.set(null);
           session = null;
         }
       }
