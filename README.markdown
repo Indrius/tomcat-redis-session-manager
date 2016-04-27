@@ -131,6 +131,7 @@ Since each situation is different, the manager gives you several options which c
 
 - `SAVE_ON_CHANGE`: every time `session.setAttribute()` or `session.removeAttribute()` is called the session will be saved. __Note:__ This feature cannot detect changes made to objects already stored in a specific session attribute. __Tradeoffs__: This option will degrade performance slightly as any change to the session will save the session synchronously to Redis.
 - `ALWAYS_SAVE_AFTER_REQUEST`: force saving after every request, regardless of whether or not the manager has detected changes to the session. This option is particularly useful if you make changes to objects already stored in a specific session attribute. __Tradeoff:__ This option make actually increase the liklihood of race conditions if not all of your requests change the session.
+- `FIRST_WIN`: Makes sure in case of multiple threads (eg on different hosts) will load the same session state, the first one which will attempt to persist the session will be allowed do it, all the other threads requests to persist the session in Redis will be silently ignored.
 
 
 Testing/Example App

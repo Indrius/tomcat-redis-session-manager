@@ -1,32 +1,33 @@
 package com.orangefunction.tomcat.redissessions;
 
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.EnumSet;
+import java.util.Enumeration;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
+
 import org.apache.catalina.Lifecycle;
 import org.apache.catalina.LifecycleException;
 import org.apache.catalina.LifecycleListener;
-import org.apache.catalina.util.LifecycleSupport;
 import org.apache.catalina.LifecycleState;
 import org.apache.catalina.Loader;
-import org.apache.catalina.Valve;
 import org.apache.catalina.Session;
+import org.apache.catalina.Valve;
 import org.apache.catalina.session.ManagerBase;
-
-import redis.clients.util.Pool;
-import redis.clients.jedis.JedisPool;
-import redis.clients.jedis.JedisSentinelPool;
-import redis.clients.jedis.JedisPoolConfig;
-import redis.clients.jedis.Jedis;
-import redis.clients.jedis.Protocol;
-
-import java.io.IOException;
-import java.util.Arrays;
-import java.util.Enumeration;
-import java.util.Set;
-import java.util.EnumSet;
-import java.util.HashSet;
-import java.util.Iterator;
-
+import org.apache.catalina.util.LifecycleSupport;
 import org.apache.juli.logging.Log;
 import org.apache.juli.logging.LogFactory;
+
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.JedisPoolConfig;
+import redis.clients.jedis.JedisSentinelPool;
+import redis.clients.jedis.Protocol;
+import redis.clients.util.Pool;
+import redis.clients.util.SafeEncoder;
 
 
 public class RedisSessionManager extends ManagerBase implements Lifecycle {
@@ -34,7 +35,8 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
   enum SessionPersistPolicy {
     DEFAULT,
     SAVE_ON_CHANGE,
-    ALWAYS_SAVE_AFTER_REQUEST;
+    ALWAYS_SAVE_AFTER_REQUEST,
+    FIRST_WIN;
 
     static SessionPersistPolicy fromName(String name) {
       for (SessionPersistPolicy policy : SessionPersistPolicy.values()) {
@@ -46,7 +48,18 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
     }
   }
 
-  protected byte[] NULL_SESSION = "null".getBytes();
+  private final static byte[] NULL_SESSION = "null".getBytes();
+  
+  private final static String FIRST_WIN_KEY_PREFIX = "FirstWin_";
+  
+  private static final byte[] LUA_READ_SESSION = ("redis.call('SETNX',KEYS[2],\"0\")\n" +
+		  									      "return {redis.call('GET',KEYS[1]), redis.call('GET',KEYS[2])}").getBytes();
+  
+  private static final byte[] LUA_SAVE_SESSION = ("local seq = redis.call('GET',KEYS[2])\n" +
+												"if seq == ARGV[2] then\n" +
+												"  redis.call('INCR',KEYS[2])\n" +
+												"  redis.call('SET',KEYS[1],ARGV[1])\n" +
+												"end").getBytes();
 
   private final static Log log = LogFactory.getLog(RedisSessionManager.class);
 
@@ -56,7 +69,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
   protected String password = null;
   protected int timeout = Protocol.DEFAULT_TIMEOUT;
   protected String sentinelMaster = null;
-  Set<String> sentinelSet = null;
+  protected Set<String> sentinelSet = null;
 
   protected Pool<Jedis> connectionPool;
   protected final JedisPoolConfig connectionPoolConfig = new JedisPoolConfig();
@@ -65,6 +78,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
   protected ThreadLocal<RedisSession> currentSession = new ThreadLocal<>();
   protected final ThreadLocal<SessionSerializationMetadata> currentSessionSerializationMetadata = new ThreadLocal<>();
   protected final ThreadLocal<String> currentSessionId = new ThreadLocal<>();
+  protected final ThreadLocal<byte[]> currentSessionFirstWinSequence = new ThreadLocal<>();
   protected final ThreadLocal<Boolean> currentSessionIsPersisted = new ThreadLocal<>();
   protected Serializer serializer;
 
@@ -147,6 +161,10 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
 
   public boolean getSaveOnChange() {
     return this.sessionPersistPoliciesSet.contains(SessionPersistPolicy.SAVE_ON_CHANGE);
+  }
+  
+  public boolean isFirstWin() {
+	return this.sessionPersistPoliciesSet.contains(SessionPersistPolicy.FIRST_WIN);
   }
 
   public boolean getAlwaysSaveAfterRequest() {
@@ -333,7 +351,7 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
     String sessionId = null;
     String jvmRoute = getJvmRoute();
 
-    Boolean error = true;
+    boolean error = true;
     Jedis jedis = null;
     try {
       jedis = acquireConnection();
@@ -420,30 +438,42 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
     RedisSession session = null;
 
     if (null == id) {
-      currentSessionIsPersisted.set(false);
-      currentSession.set(null);
-      currentSessionSerializationMetadata.set(null);
-      currentSessionId.set(null);
+      clearThreadLocalValues();
     } else if (id.equals(currentSessionId.get())) {
       session = currentSession.get();
     } else {
-      byte[] data = loadSessionDataFromRedis(id);
-      if (data != null) {
-        DeserializedSessionContainer container = sessionFromSerializedData(id, data);
+      DataAndSequence dataAndSeq = loadSessionDataFromRedis(id);
+      if (dataAndSeq != null && dataAndSeq.data != null) {
+        DeserializedSessionContainer container = sessionFromSerializedData(id, dataAndSeq.data);
         session = container.session;
         currentSession.set(session);
         currentSessionSerializationMetadata.set(container.metadata);
         currentSessionIsPersisted.set(true);
         currentSessionId.set(id);
+        if (isFirstWin()) {
+        	if (null != dataAndSeq.sequence) {
+        		if (log.isInfoEnabled()) {
+        			log.info("Setting sequence: " + SafeEncoder.encode(dataAndSeq.sequence));
+        		}
+            	currentSessionFirstWinSequence.set(dataAndSeq.sequence);
+            } else {
+            	throw new IOException("Can not load current session data: no sequence");
+            }
+        }
       } else {
-        currentSessionIsPersisted.set(false);
-        currentSession.set(null);
-        currentSessionSerializationMetadata.set(null);
-        currentSessionId.set(null);
+        clearThreadLocalValues();
       }
     }
 
     return session;
+  }
+
+  private void clearThreadLocalValues() {
+	currentSessionIsPersisted.set(false);
+      currentSession.set(null);
+      currentSessionSerializationMetadata.set(null);
+      currentSessionId.set(null);
+      currentSessionFirstWinSequence.set(null);
   }
 
   public void clear() {
@@ -489,8 +519,17 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
       }
     }
   }
+  
+  static class DataAndSequence {
+	  public final byte[] data;
+	  public final byte[] sequence;
+	  public DataAndSequence(byte[] data, byte[] sequence) {
+		  this.data = data;
+		  this.sequence = sequence;
+	  }
+  }
 
-  public byte[] loadSessionDataFromRedis(String id) throws IOException {
+  public DataAndSequence loadSessionDataFromRedis(String id) throws IOException {
     Jedis jedis = null;
     Boolean error = true;
 
@@ -498,14 +537,36 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
       log.trace("Attempting to load session " + id + " from Redis");
 
       jedis = acquireConnection();
-      byte[] data = jedis.get(id.getBytes());
+      
+      final byte[] data;
+      final byte[] sequence;
+      
+      if (isFirstWin()) {
+    	  final byte[] firstWinBinaryId = generateSequenceId(id);
+          Object evalResp = jedis.eval(LUA_READ_SESSION, 2, id.getBytes(), firstWinBinaryId);
+          if (null != evalResp) {
+        	  if (evalResp instanceof List) {
+        		  List<byte[]> list = (List<byte[]>) evalResp;
+        		  data = list.get(0);
+        		  sequence = list.get(1);
+        	  } else {
+        		  throw new IOException("Can not load current session data: not a list");
+        	  }
+          } else {
+        	  throw new IOException("Can not load current session data: no response");
+          }
+      } else {
+    	  data = jedis.get(id.getBytes());
+    	  sequence = null;
+      }
+      
       error = false;
 
       if (data == null) {
         log.trace("Session " + id + " not found in Redis");
       }
 
-      return data;
+      return new DataAndSequence(data, sequence);
     } finally {
       if (jedis != null) {
         returnConnection(jedis, error);
@@ -609,8 +670,14 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
 
         SessionSerializationMetadata updatedSerializationMetadata = new SessionSerializationMetadata();
         updatedSerializationMetadata.setSessionAttributesHash(sessionAttributesHash);
-
-        jedis.set(binaryId, serializer.serializeFrom(redisSession, updatedSerializationMetadata));
+        
+        final byte[] sessionData = serializer.serializeFrom(redisSession, updatedSerializationMetadata);
+        if (isFirstWin()) {
+        	byte[] firstWinBinaryId = generateSequenceId(redisSession.getId());
+            jedis.eval(LUA_SAVE_SESSION, 2, binaryId, firstWinBinaryId, sessionData, currentSessionFirstWinSequence.get());
+        } else {
+        	jedis.set(binaryId, sessionData);        	
+        }
 
         redisSession.resetDirtyTracking();
         currentSessionSerializationMetadata.set(updatedSerializationMetadata);
@@ -629,6 +696,10 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
       log.error(e.getMessage(), e);
       throw e;
     }
+  }
+
+  private byte[] generateSequenceId(String id) {
+	return (FIRST_WIN_KEY_PREFIX + id).getBytes();
   }
 
   @Override
@@ -873,13 +944,15 @@ public class RedisSessionManager extends ManagerBase implements Lifecycle {
   public void setJmxNamePrefix(String jmxNamePrefix) {
     this.connectionPoolConfig.setJmxNamePrefix(jmxNamePrefix);
   }
+  
+  static class DeserializedSessionContainer {
+	  public final RedisSession session;
+	  public final SessionSerializationMetadata metadata;
+	  public DeserializedSessionContainer(RedisSession session, SessionSerializationMetadata metadata) {
+	    this.session = session;
+	    this.metadata = metadata;
+	  }
+	}
 }
 
-class DeserializedSessionContainer {
-  public final RedisSession session;
-  public final SessionSerializationMetadata metadata;
-  public DeserializedSessionContainer(RedisSession session, SessionSerializationMetadata metadata) {
-    this.session = session;
-    this.metadata = metadata;
-  }
-}
+

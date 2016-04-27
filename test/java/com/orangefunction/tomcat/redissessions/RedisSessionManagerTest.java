@@ -6,6 +6,9 @@ import org.apache.catalina.Session;
 import org.junit.Assert;
 import org.junit.Test;
 
+import com.orangefunction.tomcat.redissessions.RedisSessionManager.DataAndSequence;
+import com.orangefunction.tomcat.redissessions.RedisSessionManager.DeserializedSessionContainer;
+
 public class RedisSessionManagerTest extends AbstractRedisSessionManagerTest {
 	
 	@Test
@@ -49,8 +52,8 @@ public class RedisSessionManagerTest extends AbstractRedisSessionManagerTest {
 		Session s2 = createSession();
 		mgr.add(s1);
 		mgr.add(s2);
-		byte[] b1 = mgr.loadSessionDataFromRedis(s1.getId());
-		byte[] b2 = mgr.loadSessionDataFromRedis(s2.getId());
+		DataAndSequence b1 = mgr.loadSessionDataFromRedis(s1.getId());
+		DataAndSequence b2 = mgr.loadSessionDataFromRedis(s2.getId());
 		Assert.assertNotNull(b1);
 		Assert.assertNotNull(b2);
 	}
@@ -59,12 +62,12 @@ public class RedisSessionManagerTest extends AbstractRedisSessionManagerTest {
 	public void testClearAndGetSize() throws IOException {
 		Session s1 = createSession();
 		mgr.add(s1);
-		byte[] b1 = mgr.loadSessionDataFromRedis(s1.getId());
+		DataAndSequence b1 = mgr.loadSessionDataFromRedis(s1.getId());
 		Assert.assertNotNull(b1);
 		Assert.assertEquals(1, mgr.getSize());
 		mgr.clear();
-		byte[] b2 = mgr.loadSessionDataFromRedis(s1.getId());
-		Assert.assertNull(b2);
+		DataAndSequence b2 = mgr.loadSessionDataFromRedis(s1.getId());
+		Assert.assertNull(b2.data);
 		Assert.assertEquals(0, mgr.getSize());
 	}
 
@@ -81,8 +84,8 @@ public class RedisSessionManagerTest extends AbstractRedisSessionManagerTest {
 		RedisSession s1 = (RedisSession) createSession();
 		s1.setAttribute(KEY1, VALUE1);
 		mgr.add(s1);
-		byte[] b1 = mgr.loadSessionDataFromRedis(s1.getId());
-		DeserializedSessionContainer c = mgr.sessionFromSerializedData(s1.getId(), b1);
+		DataAndSequence b1 = mgr.loadSessionDataFromRedis(s1.getId());
+		DeserializedSessionContainer c = mgr.sessionFromSerializedData(s1.getId(), b1.data);
 		Assert.assertEquals(s1.getAttribute(KEY1), c.session.getAttribute(KEY1));
 	}
 	

@@ -13,6 +13,10 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
+import com.orangefunction.tomcat.redissessions.RedisSessionManager.SessionPersistPolicy;
+
+import redis.clients.util.SafeEncoder;
+
 public class MultithreadingRedisSessionManagerTest extends AbstractRedisSessionManagerTest {
 	
 	private static final long DELAY_PER_THREAD = 50L;
@@ -43,7 +47,8 @@ public class MultithreadingRedisSessionManagerTest extends AbstractRedisSessionM
 	}
 
 	@Test
-	public void testListWinPolicy() throws IOException, InterruptedException, BrokenBarrierException, TimeoutException {
+	public void testLastWinPolicy() throws IOException, InterruptedException, BrokenBarrierException, TimeoutException {
+		Assert.assertFalse(mgr.isFirstWin());
 		for (int i = 0; i < NUMBER_OF_THREADS; i++) {
 			final Integer threadNumber = i;
 			service.submit(new Runnable() {
@@ -73,6 +78,47 @@ public class MultithreadingRedisSessionManagerTest extends AbstractRedisSessionM
 		
 		RedisSession s = (RedisSession) mgr.findSession(s1.getId());
 		Assert.assertEquals(Integer.valueOf(NUMBER_OF_THREADS - 1), s.getAttribute(KEY1));
+	}
+	
+	@Test
+	public void testFirstWinPolicy() throws IOException, InterruptedException, BrokenBarrierException, TimeoutException {
+		mgr.setSessionPersistPolicies(SessionPersistPolicy.FIRST_WIN.name());
+		Assert.assertTrue(mgr.isFirstWin());
+		String sequenceBefore = SafeEncoder.encode(mgr.loadSessionDataFromRedis(s1.getId()).sequence);
+		for (int i = 0; i < NUMBER_OF_THREADS; i++) {
+			final Integer threadNumber = i;
+			service.submit(new Runnable() {
+				@Override
+				public void run() {
+					try {
+						RedisSession s = (RedisSession) mgr.findSession(s1.getId());
+						System.out.println("Thread: " + threadNumber + " read the session: " + s);
+						// wait for all other threads to load the same session copy
+						waitForThreadsToReadSession.await(5, TimeUnit.SECONDS);
+						// make sure threads will update Redis in the same order they were started:
+						Thread.sleep(DELAY_PER_THREAD * threadNumber);
+						s.setAttribute(KEY1, threadNumber);
+						mgr.save(s, true);
+						mgr.afterRequest();
+						System.out.println("Thread: " + threadNumber + " saved the session: " + s + " with value: " + s.getAttribute(KEY1));
+						waitForCompletion.await();
+					} catch (Exception e) {
+						e.printStackTrace();
+						throw new RuntimeException(e);
+					}
+				}
+			});
+		}
+		
+		waitForCompletion.await(/*double just in case*/2L * DELAY_PER_THREAD * NUMBER_OF_THREADS, TimeUnit.MILLISECONDS);
+		
+		String sequenceAfter = SafeEncoder.encode(mgr.loadSessionDataFromRedis(s1.getId()).sequence);
+		int seqIntBefore = Integer.valueOf(sequenceBefore);
+		int seqIntAfter = Integer.valueOf(sequenceAfter);
+		Assert.assertEquals("Sequence should increase by one", seqIntAfter, 1 + seqIntBefore);
+		
+		RedisSession s = (RedisSession) mgr.findSession(s1.getId());
+		Assert.assertEquals(Integer.valueOf(0), s.getAttribute(KEY1));
 	}
 
 }
